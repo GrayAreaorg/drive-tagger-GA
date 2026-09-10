@@ -541,8 +541,22 @@ def sync_all(registry_sheet_id, tab):
 
     headers = rows[0]
 
+    # Friendly template headers used in the shared registry sheet, mapped to
+    # the canonical names the script expects.
+    header_aliases = {
+        'name your project:': 'Project',
+        'paste the url of the folder containing your tagged corpus here:': 'Folder URL',
+        'paste the url of the sheet that will collect your data here:': 'Sheet URL',
+        'top tags? (to modify, enter an integer 0 - 20)': 'Top Tags',
+        'choose activate to run the tool (deactivate will pause the tool on the specified folder-sheet pair).': 'Active',
+    }
+
+    def canonical(header):
+        h = header.strip()
+        return header_aliases.get(h.lower(), h)
+
     header_map = {
-        header.strip(): index
+        canonical(header): index
         for index, header in enumerate(headers)
         if header.strip()
     }
