@@ -205,11 +205,25 @@ class Drive:
             'updateSheetProperties': {
                 'properties': {
                     'sheetId': sheet['sheetId'],
-                    'title': title
+                    'title': title,
+                    'gridProperties': {
+                        'frozenRowCount': 1
+                    }
                 },
-                'fields': 'title'
+                'fields': 'title,gridProperties.frozenRowCount'
             }
-
+        }, {
+            'setBasicFilter': {
+                'filter': {
+                    'range': {
+                        'sheetId': sheet['sheetId'],
+                        'startRowIndex': 0,
+                        'endRowIndex': len(values) + 1,
+                        'startColumnIndex': 0,
+                        'endColumnIndex': len(headers)
+                    }
+                }
+            }
         }]
         body = {'requests': requests}
         resp = self.sheets.batchUpdate(spreadsheetId=sheet_id, body=body).execute()
@@ -249,10 +263,10 @@ class Drive:
         headers = ['Tag', '# Documents', '# Occurrences']
         values = [
             [tag, tag_counts[tag], tag_occurrences[tag]]
-            for tag in tag_counts
+            for tag in sorted(tag_counts)
         ]
 
-        # Name the first sheet
+        # Name and format the first sheet
         first_sheet = next(s for s in sheets if s['index'] == 0)
         self.sheets.batchUpdate(
             spreadsheetId=sheet_id,
@@ -261,9 +275,24 @@ class Drive:
                     'updateSheetProperties': {
                         'properties': {
                             'sheetId': first_sheet['sheetId'],
-                            'title': 'Tag Summary'
+                            'title': 'Tag Summary',
+                            'gridProperties': {
+                                'frozenRowCount': 1
+                            }
                         },
-                        'fields': 'title'
+                        'fields': 'title,gridProperties.frozenRowCount'
+                    }
+                }, {
+                    'setBasicFilter': {
+                        'filter': {
+                            'range': {
+                                'sheetId': first_sheet['sheetId'],
+                                'startRowIndex': 0,
+                                'endRowIndex': len(values) + 1,
+                                'startColumnIndex': 0,
+                                'endColumnIndex': len(headers)
+                            }
+                        }
                     }
                 }]
             }
@@ -370,7 +399,7 @@ class Drive:
        			 'properties': {
            			 'title': tag,
            			 'gridProperties': {
-                			'rowCount': max(len(tag_groups[tag]), 1),
+                            'rowCount': max(len(tag_groups[tag]) + 1, 1),
                 				'columnCount': 2
             }
         }
@@ -394,7 +423,7 @@ class Drive:
             mentions = tag_groups[tag]
             sheet = sheets_by_title[tag]
 
-            sheet_requests.append({
+            sheet_requests.extend([{
                 'updateCells': {
                     'rows': [{
                         'values': [{
@@ -402,13 +431,35 @@ class Drive:
                                 'stringValue': c
                             }
                         } for c in m]
-                    } for m in mentions],
+                    } for m in [['Document ID', 'Highlighted']] + mentions],
                     'range': {
                         'sheetId': sheet['sheetId']
                     },
                     'fields': 'userEnteredValue'
                 }
-            })
+            }, {
+                'updateSheetProperties': {
+                    'properties': {
+                        'sheetId': sheet['sheetId'],
+                        'gridProperties': {
+                            'frozenRowCount': 1
+                        }
+                    },
+                    'fields': 'gridProperties.frozenRowCount'
+                }
+            }, {
+                'setBasicFilter': {
+                    'filter': {
+                        'range': {
+                            'sheetId': sheet['sheetId'],
+                            'startRowIndex': 0,
+                            'endRowIndex': len(mentions) + 1,
+                            'startColumnIndex': 0,
+                            'endColumnIndex': 2
+                        }
+                    }
+                }
+            }])
 
         if sheet_requests:
             body = {'requests': sheet_requests}
