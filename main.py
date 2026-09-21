@@ -231,7 +231,8 @@ class Drive:
     def update_spreadsheet(self, sheet_id, tagged, graphs, doc_meta, top_tags=0):
         # Get sub-sheets
         resp = self.sheets.get(spreadsheetId=sheet_id).execute()
-        sheets = [s['properties'] for s in resp['sheets']]
+        sheet_resources = resp['sheets']
+        sheets = [s['properties'] for s in sheet_resources]
 
         # Reset sheets
         requests = [{
@@ -265,37 +266,132 @@ class Drive:
             [tag, tag_counts[tag], tag_occurrences[tag]]
             for tag in sorted(tag_counts)
         ]
-
         # Name and format the first sheet
         first_sheet = next(s for s in sheets if s['index'] == 0)
-        self.sheets.batchUpdate(
-            spreadsheetId=sheet_id,
-            body={
-                'requests': [{
-                    'updateSheetProperties': {
-                        'properties': {
-                            'sheetId': first_sheet['sheetId'],
-                            'title': 'Tag Summary',
-                            'gridProperties': {
-                                'frozenRowCount': 1
-                            }
-                        },
-                        'fields': 'title,gridProperties.frozenRowCount'
+
+        first_sheet_resource = next(
+            s for s in sheet_resources
+            if s['properties']['sheetId'] == first_sheet['sheetId']
+        )
+
+        summary_requests = [{
+            'updateSheetProperties': {
+                'properties': {
+                    'sheetId': first_sheet['sheetId'],
+                    'title': 'Tag Summary',
+                    'gridProperties': {
+                        'frozenRowCount': 1
                     }
-                }, {
-                    'setBasicFilter': {
-                        'filter': {
-                            'range': {
+                },
+                'fields': 'title,gridProperties.frozenRowCount'
+            }
+        }, {
+            'setBasicFilter': {
+                'filter': {
+                    'range': {
+                        'sheetId': first_sheet['sheetId'],
+                        'startRowIndex': 0,
+                        'endRowIndex': len(values) + 1,
+                        'startColumnIndex': 0,
+                        'endColumnIndex': len(headers)
+                    }
+                }
+            }
+        }]
+
+        
+        # Highlight common tags by percentile rank of # Documents
+        existing_rules = first_sheet_resource.get('conditionalFormats', [])
+
+        # Remove the old column-only gradient rule, if present
+        old_gradient_indexes = [
+            index
+            for index, rule in enumerate(existing_rules)
+            if 'gradientRule' in rule
+            and any(
+                r.get('startRowIndex') == 1
+                and r.get('startColumnIndex') == 1
+                and r.get('endColumnIndex') == 2
+                for r in rule.get('ranges', [])
+            )
+        ]
+
+        for index in reversed(old_gradient_indexes):
+            summary_requests.append({
+                'deleteConditionalFormatRule': {
+                    'sheetId': first_sheet['sheetId'],
+                    'index': index
+                }
+            })
+
+        # Don't add another copy on every sync
+        has_percentile_highlights = any(
+            any(
+                'PERCENTRANK($B$2:$B,$B2)' in value.get('userEnteredValue', '')
+                for value in rule.get(
+                    'booleanRule', {}
+                ).get(
+                    'condition', {}
+                ).get('values', [])
+            )
+            for rule in existing_rules
+        )
+
+        if not has_percentile_highlights:
+            rank_expr = 'IFERROR(PERCENTRANK($B$2:$B,$B2),0)'
+
+            bands = [
+                # lower percentile, upper percentile, pale-yellow background
+                (0.80, None, {'red': 1.0, 'green': 0.93, 'blue': 0.58}),
+                (0.60, 0.80, {'red': 1.0, 'green': 0.96, 'blue': 0.70}),
+                (0.40, 0.60, {'red': 1.0, 'green': 0.98, 'blue': 0.82}),
+                (0.20, 0.40, {'red': 1.0, 'green': 0.99, 'blue': 0.91}),
+            ]
+
+            for lower, upper, color in bands:
+                if upper is None:
+                    formula = (
+                        '=AND($B2<>"",{rank}>={lower})'
+                        .format(rank=rank_expr, lower=lower)
+                    )
+                else:
+                    formula = (
+                        '=AND($B2<>"",{rank}>={lower},{rank}<{upper})'
+                        .format(
+                            rank=rank_expr,
+                            lower=lower,
+                            upper=upper
+                        )
+                    )
+
+                summary_requests.append({
+                    'addConditionalFormatRule': {
+                        'rule': {
+                            'ranges': [{
                                 'sheetId': first_sheet['sheetId'],
-                                'startRowIndex': 0,
-                                'endRowIndex': len(values) + 1,
+                                'startRowIndex': 1,
                                 'startColumnIndex': 0,
                                 'endColumnIndex': len(headers)
+                            }],
+                            'booleanRule': {
+                                'condition': {
+                                    'type': 'CUSTOM_FORMULA',
+                                    'values': [{
+                                        'userEnteredValue': formula
+                                    }]
+                                },
+                                'format': {
+                                    'backgroundColor': color
+                                }
                             }
-                        }
+                        },
+                        'index': 0
                     }
-                }]
-            }
+                })
+
+        self.sheets.batchUpdate(
+            spreadsheetId=sheet_id,
+            body={'requests': summary_requests}
         ).execute()
 
         body = {
@@ -422,6 +518,22 @@ class Drive:
         for tag in tqdm(selected_tags):
             mentions = tag_groups[tag]
             sheet = sheets_by_title[tag]
+
+            needed_rows = len(mentions) + 1
+            current_rows = sheet.get('gridProperties', {}).get('rowCount', 1000)
+
+            if needed_rows > current_rows:
+                sheet_requests.append({
+                    'updateSheetProperties': {
+                        'properties': {
+                            'sheetId': sheet['sheetId'],
+                            'gridProperties': {
+                                'rowCount': needed_rows
+                            }
+                        },
+                        'fields': 'gridProperties.rowCount'
+                    }
+                })
 
             sheet_requests.extend([{
                 'updateCells': {
